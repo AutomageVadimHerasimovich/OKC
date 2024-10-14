@@ -87,7 +87,7 @@ public SerialPortGUI() {
     inputPanel.add(portPanel, BorderLayout.SOUTH);
 
     JPanel sentPanel = new JPanel(new BorderLayout());
-    sentPanel.add(new JLabel("Debug Window:"), BorderLayout.NORTH);
+    sentPanel.add(new JLabel("Debug window:"), BorderLayout.NORTH);
     sentPanel.add(new JScrollPane(sentTextArea), BorderLayout.CENTER);
 
     JPanel receivedPanel = new JPanel(new BorderLayout());
@@ -325,6 +325,13 @@ private void openReceivePort() {
         receivePort.closePort();
         JOptionPane.showMessageDialog(this, "The port " + receivePortName + " is not open for receiving.", "Error", JOptionPane.ERROR_MESSAGE);
         return;
+    }
+
+    if (comPort2 == null || !comPort2.isOpen()) {
+        int response = JOptionPane.showConfirmDialog(this, "The receiving COM port in this program is not opened.\nDo you want to continue sending?", "Warning", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (response != JOptionPane.YES_OPTION) {
+            return;
+        }
     }
 
     try {
