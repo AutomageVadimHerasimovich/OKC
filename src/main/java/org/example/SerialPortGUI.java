@@ -7,6 +7,7 @@ import java.awt.event.ActionListener;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -172,6 +173,88 @@ public class SerialPortGUI extends JFrame {
         portReadTimer.start();
     }
 
+    private static final int POLYNOMIAL = 0x91; // x^7 + x^4 + 1
+    /*( 1  230012345673) - восстанавливается */
+
+private byte calculateFCS(byte[] data) {
+    int fcs = 0;
+    for (byte b : data) {
+        fcs ^= b; // XOR текущего байта данных с FCS
+        for (int i = 0; i < 8; i++) {
+            if ((fcs & 0x80) != 0) { // Если старший бит установлен
+                fcs = (fcs << 1) ^ POLYNOMIAL; // Сдвиг влево и XOR с полиномом
+            } else {
+                fcs <<= 1; // Просто сдвиг влево
+            }
+        }
+    }
+    return (byte) (fcs & 0x3F); // Маскирование FCS до 6 бит
+}
+
+    private boolean verifyFCS(byte[] data, byte fcs) {
+    return calculateFCS(data) != fcs;
+}
+
+private byte[] leftCycleShift(byte[] byteMessage) {
+    byte[] shiftByteMessage = new byte[byteMessage.length];
+    int highestBitOfFirstByte = (byteMessage[0] & 0x80) >> 7;
+
+    for (int i = 0; i < byteMessage.length; i++) {
+        shiftByteMessage[i] = (byte) ((byteMessage[i] << 1) & 0xFF);
+        if (i < byteMessage.length - 1) {
+            shiftByteMessage[i] |= (byte) ((byteMessage[i + 1] & 0x80) >> 7);
+        }
+    }
+
+    shiftByteMessage[shiftByteMessage.length - 1] |= (byte) highestBitOfFirstByte;
+    return shiftByteMessage;
+}
+
+private byte[] rightCycleShift(byte[] byteMessage) {
+    byte[] shiftByteMessage = new byte[byteMessage.length];
+    int lowestBitOfLastByte = byteMessage[byteMessage.length - 1] & 1;
+
+    for (int i = byteMessage.length - 1; i >= 0; i--) {
+        shiftByteMessage[i] = (byte) ((byteMessage[i] >> 1) & 0xFF);
+        if (i > 0) {
+            shiftByteMessage[i] |= (byte) ((byteMessage[i - 1] & 1) << 7);
+        }
+    }
+
+    shiftByteMessage[0] |= (byte) (lowestBitOfLastByte << 7);
+    return shiftByteMessage;
+}
+
+private String cyclicShiftCorrection(String message, byte crc) {
+    int weight = Integer.bitCount(crc);
+    byte[] shiftMessage = message.getBytes(StandardCharsets.UTF_8);
+
+    if (weight <= 1) {
+        shiftMessage[shiftMessage.length - 1] ^= crc;
+        return new String(shiftMessage, StandardCharsets.UTF_8);
+    }
+
+    int countShifts = 0;
+    int sizeBits = shiftMessage.length * 8;
+
+    for (int i = 0; i < sizeBits; i++) {
+        countShifts++;
+        shiftMessage = leftCycleShift(shiftMessage);
+        crc = calculateFCS(shiftMessage);
+
+        if (Integer.bitCount(crc) <= 1) {
+            shiftMessage[shiftMessage.length - 1] ^= crc;
+
+            for (int j = 0; j < countShifts; j++) {
+                shiftMessage = rightCycleShift(shiftMessage);
+            }
+
+            return new String(shiftMessage, StandardCharsets.UTF_8);
+        }
+    }
+
+    return message;
+}
     private void readFromReceivePort() {
     if (comPort2 != null && comPort2.isOpen()) {
         new SwingWorker<Void, String>() {
@@ -186,12 +269,22 @@ public class SerialPortGUI extends JFrame {
                         while (offset < numRead) {
                             if (readBuffer[offset] != FLAG[0] && readBuffer[offset + 1] != FLAG[1]) {
                                 offset++; // Incomplete packet, look for the start of the packet
+                                continue;
                             }
                             byte[] packet = Arrays.copyOfRange(readBuffer, offset, offset + fixedPacketLength);
                             byte[] unpackedData = byte_destaffing(packet);
-                            byte[] paddedData = new byte[unpackedData.length + 4];
-                            System.arraycopy(unpackedData, 0, paddedData, 2, unpackedData.length);
-                            String dataWithOffset = new String(paddedData).trim();
+                            byte[] data = Arrays.copyOfRange(unpackedData, 2, 2 + DATA_LENGTH);
+                            byte fcs = calculateFCS(data);
+                            if (verifyFCS(data, fcs)) {
+                                if (Math.random() < 0.4) {
+                                    int randomByteIndex = (int) (Math.random() * data.length);
+                                    int randomBitIndex = (int) (Math.random() * 8);
+                                    data[randomByteIndex] ^= (byte) (1 << randomBitIndex);
+                                }
+                                String correctedData = cyclicShiftCorrection(new String(data), fcs);
+                                data = correctedData.getBytes();
+                            }
+                            String dataWithOffset = new String(data);
                             publish(dataWithOffset);
                             offset += fixedPacketLength;
                         }
@@ -214,7 +307,6 @@ public class SerialPortGUI extends JFrame {
         }.execute();
     }
 }
-
     private void updatePortList() {
         String selectedSendPort = (String) sendPortComboBox.getSelectedItem();
         String selectedReceivePort = (String) receivePortComboBox.getSelectedItem();
@@ -340,19 +432,6 @@ public class SerialPortGUI extends JFrame {
         return;
     }
 
-    // Extract the port number from comPort1
-    String sendPortName = comPort1.getSystemPortName();
-    int sendPortNumber = Integer.parseInt(sendPortName.replaceAll("\\D", ""));
-    String receivePortName = "COM" + (sendPortNumber + 1);
-
-    // Check if COMx+1 is open for reading
-    //    SerialPort receivePort = SerialPort.getCommPort(receivePortName);
-    //    if (receivePort.openPort()) {
-    //        receivePort.closePort();
-    //        JOptionPane.showMessageDialog(this, "The port " + receivePortName + " is not open for receiving.", "Error", JOptionPane.ERROR_MESSAGE);
-    //        return;
-    //    }
-
     if (comPort2 == null || !comPort2.isOpen()) {
         int response = JOptionPane.showConfirmDialog(this, "The receiving COM port in this program is not opened.\nDo you want to continue sending?", "Warning", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
         if (response != JOptionPane.YES_OPTION) {
@@ -369,7 +448,7 @@ public class SerialPortGUI extends JFrame {
             int start = i * DATA_LENGTH;
             int end = Math.min(start + DATA_LENGTH, dataBytes.length);
             byte[] packetData = Arrays.copyOfRange(dataBytes, start, end);
-            byte[] packet = createPacket(packetData, sendPortName);
+            byte[] packet = createPacket(packetData, comPort1.getSystemPortName());
             comPort1.getOutputStream().write(packet);
             comPort1.getOutputStream().flush();
             SwingUtilities.invokeLater(() -> {
@@ -378,8 +457,8 @@ public class SerialPortGUI extends JFrame {
             });
         }
 
-        sendCount ++;
-        statusLabel.setText("Receiving from " + comPort1.getSystemPortName() + " to " + receivePortName + " with baud rate 9600, data bits 8, stop bits 1, no parity. Send count: " + sendCount);
+        sendCount++;
+        statusLabel.setText("Receiving from " + comPort1.getSystemPortName() + " to " + (comPort2 != null ? comPort2.getSystemPortName() : "None") + " with baud rate 9600, data bits 8, stop bits 1, no parity. Send count: " + sendCount);
     } catch (Exception e) {
         logger.log(Level.SEVERE, "Error during communication", e);
         sentTextArea.append("Error: " + e.getMessage() + "\n");
@@ -394,7 +473,7 @@ public class SerialPortGUI extends JFrame {
     packet[3] = (byte) Integer.parseInt(sourcePort.replaceAll("\\D", ""));
     System.arraycopy(data, 0, packet, 4, data.length);
     Arrays.fill(packet, 4 + data.length, 4 + DATA_LENGTH, (byte) 0); // Pad with zeros if necessary
-    packet[4 + DATA_LENGTH] = 0; // FCS
+    packet[4 + DATA_LENGTH] = calculateFCS(data); // FCS
     return applyByteStuffing(packet);
 }
 
@@ -428,7 +507,7 @@ public class SerialPortGUI extends JFrame {
     return stuffedData.toByteArray();
 }
 
-private byte[] byte_destaffing(byte[] packet) {
+    private byte[] byte_destaffing(byte[] packet) {
     byte[] data = Arrays.copyOfRange(packet, 2, packet.length - 1);
     ByteArrayOutputStream unstuffedData = new ByteArrayOutputStream();
     for (int i = 0; i < data.length; i++) {
@@ -455,10 +534,18 @@ private byte[] byte_destaffing(byte[] packet) {
                 sb.append("[0x").append(String.format("%02X", ESCAPE)).append(" 0x").append(String.format("%02X", ESCAPE_MASK)).append("]");
                 i++; // Skip the next character as it is part of the sequence
             } else {
-                if ((packet[i] & 0xFF) == 0) {
-                    sb.append((packet[i] & 0xFF)); // Convert remaining bytes to decimal if value is 00
+                if (i == packet.length - 1) {
+                    if (Character.isISOControl(packet[i]) || !Character.isDefined(packet[i])  || packet[i] == ' ' || packet[i] == '\n') {
+                        sb.append(" \u0080"); // Placeholder for non-printable characters
+                    } else {
+                        sb.append(" ").append((char) packet[i]); // Convert FCS byte to character and separate with a space
+                    }
                 } else {
-                    sb.append((char) packet[i]); // Convert remaining bytes to characters
+                    if ((packet[i] & 0xFF) == 0) {
+                        sb.append((packet[i] & 0xFF)); // Convert remaining bytes to decimal if value is 00
+                    } else {
+                        sb.append(new String(new byte[]{packet[i]})); // Convert remaining bytes to characters
+                    }
                 }
             }
         }
