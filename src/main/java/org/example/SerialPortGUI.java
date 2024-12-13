@@ -21,6 +21,8 @@ public class SerialPortGUI extends JFrame {
     private static final int DATA_LENGTH = 8;
     private static final byte ESCAPE = 0x00; // '00' character
     private static final byte ESCAPE_MASK = 0x1B; // 'ESC' character
+    private boolean isSending = false; // Flag to track sending state
+
 
     static {
         String instanceCountStr = Config.getProperty("INSTANCE_COUNT");
@@ -174,9 +176,8 @@ public class SerialPortGUI extends JFrame {
     }
 
     private static final int POLYNOMIAL = 0x91; // x^7 + x^4 + 1
-    /*( 1  230012345673) - восстанавливается */
 
-private byte calculateFCS(byte[] data) {
+    private byte calculateFCS(byte[] data) {
     int fcs = 0;
     for (byte b : data) {
         fcs ^= b; // XOR текущего байта данных с FCS
@@ -195,66 +196,67 @@ private byte calculateFCS(byte[] data) {
     return calculateFCS(data) != fcs;
 }
 
-private byte[] leftCycleShift(byte[] byteMessage) {
-    byte[] shiftByteMessage = new byte[byteMessage.length];
-    int highestBitOfFirstByte = (byteMessage[0] & 0x80) >> 7;
+    private byte[] leftCycleShift(byte[] byteMessage) {
+        byte[] shiftByteMessage = new byte[byteMessage.length];
+        int highestBitOfFirstByte = (byteMessage[0] & 0x80) >> 7;
 
-    for (int i = 0; i < byteMessage.length; i++) {
-        shiftByteMessage[i] = (byte) ((byteMessage[i] << 1) & 0xFF);
-        if (i < byteMessage.length - 1) {
-            shiftByteMessage[i] |= (byte) ((byteMessage[i + 1] & 0x80) >> 7);
-        }
-    }
-
-    shiftByteMessage[shiftByteMessage.length - 1] |= (byte) highestBitOfFirstByte;
-    return shiftByteMessage;
-}
-
-private byte[] rightCycleShift(byte[] byteMessage) {
-    byte[] shiftByteMessage = new byte[byteMessage.length];
-    int lowestBitOfLastByte = byteMessage[byteMessage.length - 1] & 1;
-
-    for (int i = byteMessage.length - 1; i >= 0; i--) {
-        shiftByteMessage[i] = (byte) ((byteMessage[i] >> 1) & 0xFF);
-        if (i > 0) {
-            shiftByteMessage[i] |= (byte) ((byteMessage[i - 1] & 1) << 7);
-        }
-    }
-
-    shiftByteMessage[0] |= (byte) (lowestBitOfLastByte << 7);
-    return shiftByteMessage;
-}
-
-private String cyclicShiftCorrection(String message, byte crc) {
-    int weight = Integer.bitCount(crc);
-    byte[] shiftMessage = message.getBytes(StandardCharsets.UTF_8);
-
-    if (weight <= 1) {
-        shiftMessage[shiftMessage.length - 1] ^= crc;
-        return new String(shiftMessage, StandardCharsets.UTF_8);
-    }
-
-    int countShifts = 0;
-    int sizeBits = shiftMessage.length * 8;
-
-    for (int i = 0; i < sizeBits; i++) {
-        countShifts++;
-        shiftMessage = leftCycleShift(shiftMessage);
-        crc = calculateFCS(shiftMessage);
-
-        if (Integer.bitCount(crc) <= 1) {
-            shiftMessage[shiftMessage.length - 1] ^= crc;
-
-            for (int j = 0; j < countShifts; j++) {
-                shiftMessage = rightCycleShift(shiftMessage);
+        for (int i = 0; i < byteMessage.length; i++) {
+            shiftByteMessage[i] = (byte) ((byteMessage[i] << 1) & 0xFF);
+            if (i < byteMessage.length - 1) {
+                shiftByteMessage[i] |= (byte) ((byteMessage[i + 1] & 0x80) >> 7);
             }
+        }
 
+        shiftByteMessage[shiftByteMessage.length - 1] |= (byte) highestBitOfFirstByte;
+        return shiftByteMessage;
+    }
+
+    private byte[] rightCycleShift(byte[] byteMessage) {
+        byte[] shiftByteMessage = new byte[byteMessage.length];
+        int lowestBitOfLastByte = byteMessage[byteMessage.length - 1] & 1;
+
+        for (int i = byteMessage.length - 1; i >= 0; i--) {
+            shiftByteMessage[i] = (byte) ((byteMessage[i] >> 1) & 0xFF);
+            if (i > 0) {
+                shiftByteMessage[i] |= (byte) ((byteMessage[i - 1] & 1) << 7);
+            }
+        }
+
+        shiftByteMessage[0] |= (byte) (lowestBitOfLastByte << 7);
+        return shiftByteMessage;
+    }
+
+    private String cyclicShiftCorrection(String message, byte crc) {
+        int weight = Integer.bitCount(crc);
+        byte[] shiftMessage = message.getBytes(StandardCharsets.UTF_8);
+
+        if (weight <= 1) {
+            shiftMessage[shiftMessage.length - 1] ^= crc;
             return new String(shiftMessage, StandardCharsets.UTF_8);
         }
+
+        int countShifts = 0;
+        int sizeBits = shiftMessage.length * 8;
+
+        for (int i = 0; i < sizeBits; i++) {
+            countShifts++;
+            shiftMessage = leftCycleShift(shiftMessage);
+            crc = calculateFCS(shiftMessage);
+
+            if (Integer.bitCount(crc) <= 1) {
+                shiftMessage[shiftMessage.length - 1] ^= crc;
+
+                for (int j = 0; j < countShifts; j++) {
+                    shiftMessage = rightCycleShift(shiftMessage);
+                }
+
+                return new String(shiftMessage, StandardCharsets.UTF_8);
+            }
+        }
+
+        return message;
     }
 
-    return message;
-}
     private void readFromReceivePort() {
     if (comPort2 != null && comPort2.isOpen()) {
         new SwingWorker<Void, String>() {
@@ -307,6 +309,7 @@ private String cyclicShiftCorrection(String message, byte crc) {
         }.execute();
     }
 }
+
     private void updatePortList() {
         String selectedSendPort = (String) sendPortComboBox.getSelectedItem();
         String selectedReceivePort = (String) receivePortComboBox.getSelectedItem();
@@ -421,6 +424,11 @@ private String cyclicShiftCorrection(String message, byte crc) {
     }
 
     private void sendData() {
+    if (isSending) {
+        JOptionPane.showMessageDialog(this, "Messages are already being sent. Please wait.", "Error", JOptionPane.ERROR_MESSAGE);
+        return;
+    }
+
     String dataToSend = textArea.getText();
     if (dataToSend.isEmpty()) {
         JOptionPane.showMessageDialog(this, "Please enter data to send.", "Error", JOptionPane.ERROR_MESSAGE);
@@ -439,30 +447,78 @@ private String cyclicShiftCorrection(String message, byte crc) {
         }
     }
 
-    try {
-        byte[] dataBytes = dataToSend.getBytes();
-        int totalPackets = (int) Math.ceil((double) dataBytes.length / DATA_LENGTH);
-        AtomicInteger countPackets = new AtomicInteger();
+    textArea.setEditable(false);
+    isSending = true; // Set the flag to true
 
-        for (int i = 0; i < totalPackets; i++) {
-            int start = i * DATA_LENGTH;
-            int end = Math.min(start + DATA_LENGTH, dataBytes.length);
-            byte[] packetData = Arrays.copyOfRange(dataBytes, start, end);
-            byte[] packet = createPacket(packetData, comPort1.getSystemPortName());
-            comPort1.getOutputStream().write(packet);
-            comPort1.getOutputStream().flush();
-            SwingUtilities.invokeLater(() -> {
-                countPackets.getAndIncrement();
-                statusLabel.setText(statusLabel.getText() + "\nPacket " + countPackets + " : " + packetToString(packet));
-            });
+    new SwingWorker<Void, String>() {
+        @Override
+        protected Void doInBackground() {
+            statusLabel.setText(""); // Clear old messages at the beginning of a new batch
+            publish("Receiving from " + comPort1.getSystemPortName() + " to " + (comPort2 != null ? comPort2.getSystemPortName() : "None") + " with baud rate 9600, data bits 8, stop bits 1, no parity. Send count: " + sendCount);
+            try {
+                byte[] dataBytes = dataToSend.getBytes();
+                int totalPackets = (int) Math.ceil((double) dataBytes.length / DATA_LENGTH);
+                AtomicInteger countPackets = new AtomicInteger();
+
+                for (int i = 0; i < totalPackets; i++) {
+                    int start = i * DATA_LENGTH;
+                    int end = Math.min(start + DATA_LENGTH, dataBytes.length);
+                    byte[] packetData = Arrays.copyOfRange(dataBytes, start, end);
+                    byte[] packet = createPacket(packetData, comPort1.getSystemPortName());
+
+                    int attempt = 0;
+                    boolean sent = false;
+                    int packetNumber = countPackets.incrementAndGet();
+                    publish("\nPacket " + packetNumber + " : " + packetToString(packet) + " ");
+
+                    while (!sent && attempt < 16) {
+                        while (!isChannelBusy()) {
+                            comPort1.getOutputStream().write(packet);
+                            comPort1.getOutputStream().flush();
+                            sent = true;
+
+                            if (isCollision()) {
+                                sent = false;
+                                publish("#");
+                                applyRandomDelay(attempt);
+                                attempt++;
+                                if (attempt >= 16) {
+                                break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!sent) {
+                        publish("\nFailed to send packet " + packetNumber + " after 16 attempts.");
+                    }
+                }
+
+                sendCount++;
+            } catch (Exception e) {
+                logger.log(Level.SEVERE, "Error during communication", e);
+                publish("Error: " + e.getMessage() + "\n");
+            }
+            return null;
         }
 
-        sendCount++;
-        statusLabel.setText("Receiving from " + comPort1.getSystemPortName() + " to " + (comPort2 != null ? comPort2.getSystemPortName() : "None") + " with baud rate 9600, data bits 8, stop bits 1, no parity. Send count: " + sendCount);
-    } catch (Exception e) {
-        logger.log(Level.SEVERE, "Error during communication", e);
-        sentTextArea.append("Error: " + e.getMessage() + "\n");
-    }
+        @Override
+        protected void process(List<String> chunks) {
+            for (String chunk : chunks) {
+                statusLabel.append(chunk);
+            }
+        }
+
+        @Override
+        protected void done() {
+            textArea.setEditable(true); // Re-enable the input text area
+            textArea.requestFocusInWindow(); // Request focus back to the input text area
+            textArea.getCaret().setVisible(true); // Ensure the caret is visible
+            isSending = false; // Reset the flag
+        }
+    }.execute();
 }
 
     private byte[] createPacket(byte[] data, String sourcePort) {
@@ -560,6 +616,24 @@ private String cyclicShiftCorrection(String message, byte crc) {
         port.setParity(SerialPort.NO_PARITY);
         port.setComPortTimeouts(timeout, 1000, 1000);
     }
+
+    private boolean isChannelBusy() {
+    return Math.random() < 0.4; // 40% вероятность занятости канала
+    }
+
+    private boolean isCollision() {
+        return Math.random() < 0.6; // 60% вероятность коллизии
+    }
+
+    private void applyRandomDelay(int attempt) {
+    int k = Math.min(attempt, 4); // Must be 10
+    int delay = (int) (Math.random() * (Math.pow(2, k) + 1));
+    try {
+        Thread.sleep(delay * 200L); // Задержка в миллисекундах
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+    }
+}
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new SerialPortGUI().setVisible(true));
